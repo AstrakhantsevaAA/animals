@@ -1,0 +1,3 @@
+train:
+  log_clearml: True
+  epochs: 10

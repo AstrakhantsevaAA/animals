@@ -1,77 +1,64 @@
-from pathlib import Path
-
+import hydra
+from omegaconf import DictConfig
 import pandas as pd
 import torch
 import torch.optim as optim
-import torchvision.models as models
+from clearml import Task
 from sklearn.model_selection import train_test_split
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from animals.data_utils.dataset import ImagesDataset
+from animals.config import torch_config, system_config
+from animals.nets.define_net import define_net
 
 
-def train_model():
-    data_dir = Path("/home/alenaastrakhantseva/PycharmProjects/animals/data/raw")
-    train_features = pd.read_csv(data_dir / "train_features.csv", index_col="id")
-    test_features = pd.read_csv(data_dir / "test_features.csv", index_col="id")
-    train_labels = pd.read_csv(data_dir / "train_labels.csv", index_col="id")
+@hydra.main(version_base=None, config_path=".", config_name="config")
+def train_model(cfg: DictConfig):
+    task = Task.init(project_name="my project", task_name="my task") if cfg.train.log_clearml else None
+    logger = None if task is None else task.get_logger()
+
+    train_features = pd.read_csv(system_config.raw_data_dir / "train_features.csv", index_col="id")
+    test_features = pd.read_csv(system_config.raw_data_dir / "test_features.csv", index_col="id")
+    train_labels = pd.read_csv(system_config.raw_data_dir / "train_labels.csv", index_col="id")
 
     frac = 0.5
 
     y = train_labels.sample(frac=frac, random_state=1)
     x = train_features.loc[y.index].filepath.to_frame()
 
-    # note that we are casting the species labels to an indicator/dummy matrix
     x_train, x_eval, y_train, y_eval = train_test_split(
         x, y, stratify=y, test_size=0.25
     )
 
-    train_dataset = ImagesDataset(data_dir, x_train, y_train)
+    train_dataset = ImagesDataset(system_config.raw_data_dir, x_train, y_train)
     train_dataloader = DataLoader(train_dataset, batch_size=32)
 
-    model = models.resnet50(pretrained=True)
-    model.fc = nn.Sequential(
-        nn.Linear(2048, 100),  # dense layer takes a 2048-dim input and outputs 100-dim
-        nn.ReLU(inplace=True),  # ReLU activation introduces non-linearity
-        nn.Dropout(0.1),  # common technique to mitigate overfitting
-        nn.Linear(
-            100, 8
-        ),  # final dense layer outputs 8-dim corresponding to our target classes
-    )
+    model = define_net()
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
 
-    num_epochs = 1
+    model.to(torch_config.device)
 
-    tracking_loss = {}
+    iters = len(train_dataloader)
+    running_loss = 0
 
-    for epoch in range(1, num_epochs + 1):
+    for epoch in cfg.train.epochs:
         print(f"Starting epoch {epoch}")
-
-        # iterate through the dataloader batches. tqdm keeps track of progress.
-        for batch_n, batch in tqdm(
-            enumerate(train_dataloader), total=len(train_dataloader)
-        ):
-            # 1) zero out the parameter gradients so that gradients from previous batches are not used in this step
+        for batch_n, batch in tqdm(enumerate(train_dataloader), total=iters):
             optimizer.zero_grad()
-
-            # 2) run the foward step on this batch of images
-            outputs = model(batch["image"])
-
-            # 3) compute the loss
-            loss = criterion(outputs, batch["label"])
-            # let's keep track of the loss by epoch and batch
-            tracking_loss[(epoch, batch_n)] = float(loss)
-
-            # 4) compute our gradients
+            outputs = model(batch["image"].to(torch_config.device))
+            loss = criterion(outputs, batch["label"].to(torch_config.device))
+            running_loss += loss.item()
             loss.backward()
-            # update our weights
             optimizer.step()
-
+        logger.report_scalar(f"Loss", "train", iteration=epoch, value=running_loss / iters)
     torch.save(model, "model.pth")
+
+    if logger is not None:
+        logger.flush()
 
 
 if __name__ == "__main__":
