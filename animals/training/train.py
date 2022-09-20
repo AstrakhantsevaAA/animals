@@ -1,27 +1,37 @@
 import hydra
-from omegaconf import DictConfig
 import pandas as pd
 import torch
 import torch.optim as optim
 from clearml import Task
+from omegaconf import DictConfig
 from sklearn.model_selection import train_test_split
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from animals.config import system_config, torch_config
 from animals.data_utils.dataset import ImagesDataset
-from animals.config import torch_config, system_config
 from animals.nets.define_net import define_net
 
 
 @hydra.main(version_base=None, config_path=".", config_name="config")
 def train_model(cfg: DictConfig):
-    task = Task.init(project_name="my project", task_name="my task") if cfg.train.log_clearml else None
+    task = (
+        Task.init(project_name="my project", task_name="my task")
+        if cfg.train.log_clearml
+        else None
+    )
     logger = None if task is None else task.get_logger()
 
-    train_features = pd.read_csv(system_config.raw_data_dir / "train_features.csv", index_col="id")
-    test_features = pd.read_csv(system_config.raw_data_dir / "test_features.csv", index_col="id")
-    train_labels = pd.read_csv(system_config.raw_data_dir / "train_labels.csv", index_col="id")
+    train_features = pd.read_csv(
+        system_config.raw_data_dir / "train_features.csv", index_col="id"
+    )
+    test_features = pd.read_csv(
+        system_config.raw_data_dir / "test_features.csv", index_col="id"
+    )
+    train_labels = pd.read_csv(
+        system_config.raw_data_dir / "train_labels.csv", index_col="id"
+    )
 
     frac = 0.5
 
@@ -45,7 +55,7 @@ def train_model(cfg: DictConfig):
     iters = len(train_dataloader)
     running_loss = 0
 
-    for epoch in cfg.train.epochs:
+    for epoch in range(cfg.train.epochs):
         print(f"Starting epoch {epoch}")
         for batch_n, batch in tqdm(enumerate(train_dataloader), total=iters):
             optimizer.zero_grad()
@@ -54,7 +64,15 @@ def train_model(cfg: DictConfig):
             running_loss += loss.item()
             loss.backward()
             optimizer.step()
-        logger.report_scalar(f"Loss", "train", iteration=epoch, value=running_loss / iters)
+            logger.report_scalar(
+                f"Running_loss",
+                "train",
+                iteration=batch_n,
+                value=running_loss / (batch_n + 1),
+            )
+        logger.report_scalar(
+            f"Loss", "train", iteration=epoch, value=running_loss / iters
+        )
     torch.save(model, "model.pth")
 
     if logger is not None:
