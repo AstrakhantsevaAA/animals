@@ -1,3 +1,7 @@
 train:
   log_clearml: True
-  epochs: 10
+  epochs: 50
+  task_name: augmentations 0.3
+  augmentations_intensity: 0.3
+net:
+  freeze_grads: False
